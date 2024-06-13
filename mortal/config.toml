@@ -13,3 +13,10 @@ device = 'cuda:0'
 enable_cudnn_benchmark = false
 enable_amp = false
 enable_compile = false
+
+[grp]
+state_file = './models/grp.pth'
+
+[grp.network]
+hidden_size = 64
+num_layers = 2
