@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Upload Mahjong Record</title>
+    <script>
+      function uploadFile() {
+        var formData = new FormData();
+        var fileInput = document.getElementById('fileInput');
+        var playerIdInput = document.getElementById('playerIdInput');
+        formData.append('file', fileInput.files[0]);
+        formData.append('player_id', playerIdInput.value);
+
+        fetch('/upload', {
+          method: 'POST',
+          body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+          if (data.filepath) {
+            window.open('/result/' + data.filepath, '_blank');
+          } else {
+            alert(data.error);
+          }
+        })
+        .catch(error => console.error('Error:', error));
+      }
+    </script>
+  </head>
+  <body>
+    <h1>Upload Mahjong Record</h1>
+    <input type="file" id="fileInput">
+    <br>
+    <label for="playerIdInput">Player ID (0-3):</label>
+    <input type="number" id="playerIdInput" min="0" max="3" value="3">
+    <br>
+    <button onclick="uploadFile()">Upload</button>
+  </body>
+</html>
