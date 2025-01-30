@@ -57,10 +57,9 @@ async fn upload_file(req: HttpRequest, payload: Multipart) -> impl Responder {
     // 6. 返回结果
     match result_path {
         Ok(html_output) => {
-            HttpResponse::Ok().json(UploadResponse {
-                filepath: Some(html_output),
-                error: None,
-            })
+            let result_content = fs::read_to_string(&html_output)
+                .unwrap_or_else(|_| "Failed to read file".to_string());
+            HttpResponse::Ok().body(result_content)
         }
         Err(e) => {
             HttpResponse::InternalServerError().json(UploadResponse {
