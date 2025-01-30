@@ -3,7 +3,7 @@ use mjai_reviewer_service::delete_oldest_files;
 use actix_files::NamedFile;
 use actix_multipart::Multipart;
 use actix_web::{
-    get, post, web, App, HttpRequest, HttpServer, error::ErrorInternalServerError,
+    error::ErrorBadRequest, get, post, web, App, HttpRequest, HttpServer
 };
 use futures_util::stream::StreamExt as _;
 
@@ -25,18 +25,18 @@ async fn index () -> actix_web::Result<NamedFile> {
 async fn upload_file(req: HttpRequest, payload: Multipart) -> actix_web::Result<NamedFile> {
     // 1. 检查请求大小
     if let Err(resp) = check_request_size(&req) {
-        return Err(ErrorInternalServerError(resp));
+        return Err(ErrorBadRequest(format!("Request size exceeds limit: {}", resp)));
     }
 
     // 2. 确保 uploads/ 文件夹存在
     if let Err(resp) = ensure_upload_folder() {
-        return Err(ErrorInternalServerError(resp));
+        return Err(ErrorBadRequest(format!("Error creating upload folder: {}", resp)));
     }
 
     // 3. 解析 multipart 表单, 得到 (player_id, file_path)
     let (player_id, saved_filepath) = match parse_multipart_fields(payload).await {
         Ok(t) => t,
-        Err(resp) => return Err(ErrorInternalServerError(resp)),
+        Err(resp) => return Err(ErrorBadRequest(format!("Error parsing multipart fields: {}", resp))),
     };
 
     // 4. 清理旧文件
@@ -46,13 +46,13 @@ async fn upload_file(req: HttpRequest, payload: Multipart) -> actix_web::Result<
     let html_output = match run_mjai_reviewer(&saved_filepath, &player_id) {
         Ok(path) => path,
         Err(e) => {
-            return Err(ErrorInternalServerError(e));
+            return Err(ErrorBadRequest(format!("Error running mjai-reviewer: {}", e)));
         }
     };
 
     // 6. 返回 HTML 文件
     NamedFile::open(html_output).map_err(|e| {
-        ErrorInternalServerError(e.to_string())
+        ErrorBadRequest(format!("Error opening HTML file: {}", e))
     })
 }
 
