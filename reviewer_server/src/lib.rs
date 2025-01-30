@@ -1,6 +1,6 @@
-use std::{fs, path};
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 pub fn get_folder_size(folder: &Path) -> u64 {
     let mut size = 0;
