@@ -77,12 +77,7 @@ async fn parse_multipart_fields(mut payload: Multipart)
     let mut saved_filepath: Option<PathBuf> = None;
 
     while let Some(item) = payload.next().await {
-        // let field = match item {
-        //     Ok(f) => f,
-        //     Err(e) => {
-        //         return Err(format!("Error reading multipart field: {}", e));
-        //     }
-        // };
+
         let field = item.map_err(|e| format!("Error reading multipart field: {}", e))?;
 
         let cd = field.content_disposition();
@@ -99,13 +94,6 @@ async fn parse_multipart_fields(mut payload: Multipart)
         }
     }
 
-    // 如果没有 "file" 字段就报错
-    // let saved_filepath = match saved_filepath {
-    //     Some(p) => p,
-    //     None => {
-    //         return Err("No file provided".to_string());
-    //     }
-    // };
     let saved_filepath = saved_filepath.ok_or("No file provided".to_string())?;
 
     Ok((player_id, saved_filepath))
@@ -131,12 +119,6 @@ async fn read_player_id(mut field: actix_multipart::Field) -> Result<String, Str
 async fn save_uploaded_file(mut field: actix_multipart::Field) -> Result<PathBuf, String> {
     // 取出原文件名(若无则返回错误)
     let cd = field.content_disposition();
-    // let filename = match cd.get_filename() {
-    //     Some(f) => sanitize(f),
-    //     None => {
-    //         return Err("No filename provided".to_string());
-    //     }
-    // };
 
     let filename = cd.get_filename()
         .map(|f| sanitize(f))
@@ -156,28 +138,13 @@ async fn save_uploaded_file(mut field: actix_multipart::Field) -> Result<PathBuf
     let unique_name = format!("{}_{}.{}", stem, now, ext);
     let final_path = Path::new(UPLOAD_FOLDER).join(&unique_name);
 
-    // 创建文件
-    // let mut file_handle = match fs::File::create(&final_path) {
-    //     Ok(f) => f,
-    //     Err(e) => {
-    //         return Err(format!("Error creating file: {}", e));
-    //     }
-    // };
     let mut file_handle = fs::File::create(&final_path)
         .map_err(|e| format!("Error creating file: {}", e))?;
 
     // 逐块写入
     while let Some(chunk) = field.next().await {
-        // let data = match chunk {
-        //     Ok(d) => d,
-        //     Err(e) => {
-        //         return Err(format!("Error reading file: {}", e));
-        //     }
-        // };
         let data = chunk.map_err(|e| format!("Error reading file: {}", e))?;
-        // if let Err(e) = file_handle.write_all(&data) {
-        //     return Err(format!("Error writing file: {}", e));
-        // }
+        
         file_handle.write_all(&data)
             .map_err(|e| format!("Error writing file: {}", e))?;
     }
