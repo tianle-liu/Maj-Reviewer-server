@@ -3,28 +3,18 @@ use mjai_reviewer_service::delete_oldest_files;
 use actix_files::NamedFile;
 use actix_multipart::Multipart;
 use actix_web::{
-    get, post, web, App, HttpRequest, HttpResponse, HttpServer, Responder
+    get, post, web, App, HttpRequest, HttpServer, error::ErrorInternalServerError,
 };
 use futures_util::stream::StreamExt as _;
-use serde::Serialize;
+
 use sanitize_filename::sanitize;
 use std::{
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
-    process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    fs, io::Write, path::{Path, PathBuf}, process::Command, time::{SystemTime, UNIX_EPOCH}
 };
 
 static UPLOAD_FOLDER: &str = "uploads";
 static MAX_FOLDER_SIZE_MB: u64 = 100;
 static MAX_CONTENT_LENGTH: u64 = 100 * 1024; // 100KB
-
-#[derive(Serialize)]
-struct UploadResponse {
-    filepath: Option<String>,
-    error: Option<String>,
-}
 
 #[get("/")]
 async fn index () -> actix_web::Result<NamedFile> {
@@ -32,46 +22,42 @@ async fn index () -> actix_web::Result<NamedFile> {
 }
 
 #[post("/upload")]
-async fn upload_file(req: HttpRequest, payload: Multipart) -> impl Responder {
+async fn upload_file(req: HttpRequest, payload: Multipart) -> actix_web::Result<NamedFile> {
     // 1. 检查请求大小
     if let Err(resp) = check_request_size(&req) {
-        return resp; // resp 已经是 HttpResponse, 直接return
+        return Err(ErrorInternalServerError(resp));
     }
 
     // 2. 确保 uploads/ 文件夹存在
     if let Err(resp) = ensure_upload_folder() {
-        return resp;
+        return Err(ErrorInternalServerError(resp));
     }
 
     // 3. 解析 multipart 表单, 得到 (player_id, file_path)
     let (player_id, saved_filepath) = match parse_multipart_fields(payload).await {
         Ok(t) => t,
-        Err(resp) => return resp, // 出错就立马返回
+        Err(resp) => return Err(ErrorInternalServerError(resp)),
     };
 
     // 4. 清理旧文件
     delete_oldest_files(Path::new(UPLOAD_FOLDER), MAX_FOLDER_SIZE_MB);
 
-    // 5. 运行 mjai-reviewer 命令
-    let result_path = run_mjai_reviewer(&saved_filepath, &player_id);
-    // 6. 返回结果
-    match result_path {
-        Ok(html_output) => {
-            let result_content = fs::read_to_string(&html_output)
-                .unwrap_or_else(|_| "Failed to read file".to_string());
-            HttpResponse::Ok().body(result_content)
-        }
+    // 5. 运行 mjai-reviewer 命令并返回 HTML 结果
+    let html_output = match run_mjai_reviewer(&saved_filepath, &player_id) {
+        Ok(path) => path,
         Err(e) => {
-            HttpResponse::InternalServerError().json(UploadResponse {
-                filepath: None,
-                error: Some(e),
-            })
+            return Err(ErrorInternalServerError(e));
         }
-    }
-    
+    };
+
+    // 6. 返回 HTML 文件
+    NamedFile::open(html_output).map_err(|e| {
+        ErrorInternalServerError(e.to_string())
+    })
 }
 
-fn check_request_size(req: &HttpRequest) -> Result<(), HttpResponse> {
+
+fn check_request_size(req: &HttpRequest) -> Result<(), String> {
     if req.headers()
         .get("Content-Length")
         .and_then(|h| h.to_str().ok())
@@ -79,27 +65,21 @@ fn check_request_size(req: &HttpRequest) -> Result<(), HttpResponse> {
         .filter(|&len| len > MAX_CONTENT_LENGTH)
         .is_some()
     {
-        return Err(HttpResponse::BadRequest().json(UploadResponse {
-            filepath: None,
-            error: Some("Request size too large".to_string()),
-        }));
+        return Err(format!("Request size exceeds limit of {} bytes", MAX_CONTENT_LENGTH));
     }
     Ok(())
 }
 
-fn ensure_upload_folder() -> Result<(), HttpResponse> {
+fn ensure_upload_folder() -> Result<(), String> {
     fs::create_dir_all(UPLOAD_FOLDER).map_err(|e| {
-        HttpResponse::InternalServerError().json(UploadResponse {
-            filepath: None,
-            error: Some(format!("Could not create uploads folder: {}", e)),
-        })
+        format!("Error creating upload folder: {}", e)
     })?;
     Ok(())
 }
 
 
 async fn parse_multipart_fields(mut payload: Multipart)
-    -> Result<(String, PathBuf), HttpResponse>
+    -> Result<(String, PathBuf), String>
 {
     // 默认 player_id="0"
     let mut player_id = "0".to_string();
@@ -109,11 +89,7 @@ async fn parse_multipart_fields(mut payload: Multipart)
         let field = match item {
             Ok(f) => f,
             Err(e) => {
-                let resp = HttpResponse::BadRequest().json(UploadResponse {
-                    filepath: None,
-                    error: Some(format!("Error reading multipart: {}", e)),
-                });
-                return Err(resp);
+                return Err(format!("Error reading multipart field: {}", e));
             }
         };
 
@@ -137,11 +113,7 @@ async fn parse_multipart_fields(mut payload: Multipart)
     let saved_filepath = match saved_filepath {
         Some(p) => p,
         None => {
-            let resp = HttpResponse::BadRequest().json(UploadResponse {
-                filepath: None,
-                error: Some("No file uploaded".into()),
-            });
-            return Err(resp);
+            return Err("No file provided".to_string());
         }
     };
 
@@ -149,17 +121,13 @@ async fn parse_multipart_fields(mut payload: Multipart)
 }
 
 
-async fn read_player_id(mut field: actix_multipart::Field) -> Result<String, HttpResponse> {
+async fn read_player_id(mut field: actix_multipart::Field) -> Result<String, String> {
     let mut bytes = Vec::new();
     while let Some(chunk) = field.next().await {
         let data = match chunk {
             Ok(d) => d,
             Err(e) => {
-                let resp = HttpResponse::BadRequest().json(UploadResponse {
-                    filepath: None,
-                    error: Some(format!("Error reading player_id: {}", e)),
-                });
-                return Err(resp);
+                return Err(format!("Error reading player_id: {}", e));
             }
         };
         bytes.extend_from_slice(&data);
@@ -169,17 +137,13 @@ async fn read_player_id(mut field: actix_multipart::Field) -> Result<String, Htt
 }
 
 
-async fn save_uploaded_file(mut field: actix_multipart::Field) -> Result<PathBuf, HttpResponse> {
+async fn save_uploaded_file(mut field: actix_multipart::Field) -> Result<PathBuf, String> {
     // 取出原文件名(若无则返回错误)
     let cd = field.content_disposition();
     let filename = match cd.get_filename() {
         Some(f) => sanitize(f),
         None => {
-            let resp = HttpResponse::BadRequest().json(UploadResponse {
-                filepath: None,
-                error: Some("No filename provided".into()),
-            });
-            return Err(resp);
+            return Err("No filename provided".to_string());
         }
     };
 
@@ -201,11 +165,7 @@ async fn save_uploaded_file(mut field: actix_multipart::Field) -> Result<PathBuf
     let mut file_handle = match fs::File::create(&final_path) {
         Ok(f) => f,
         Err(e) => {
-            let resp = HttpResponse::InternalServerError().json(UploadResponse {
-                filepath: None,
-                error: Some(format!("Error creating file: {}", e)),
-            });
-            return Err(resp);
+            return Err(format!("Error creating file: {}", e));
         }
     };
 
@@ -214,19 +174,11 @@ async fn save_uploaded_file(mut field: actix_multipart::Field) -> Result<PathBuf
         let data = match chunk {
             Ok(d) => d,
             Err(e) => {
-                let resp = HttpResponse::InternalServerError().json(UploadResponse {
-                    filepath: None,
-                    error: Some(format!("Error reading file chunk: {}", e)),
-                });
-                return Err(resp);
+                return Err(format!("Error reading file: {}", e));
             }
         };
         if let Err(e) = file_handle.write_all(&data) {
-            let resp = HttpResponse::InternalServerError().json(UploadResponse {
-                filepath: None,
-                error: Some(format!("Error writing file: {}", e)),
-            });
-            return Err(resp);
+            return Err(format!("Error writing file: {}", e));
         }
     }
 
