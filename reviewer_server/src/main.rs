@@ -3,7 +3,7 @@ use mjai_reviewer_service::delete_oldest_files;
 use actix_files::NamedFile;
 use actix_multipart::Multipart;
 use actix_web::{
-    error::ErrorBadRequest, get, post, web, App, HttpRequest, HttpServer
+    error::{ErrorBadRequest, ErrorInternalServerError}, get, post, web, App, HttpRequest, HttpServer
 };
 use futures_util::stream::StreamExt as _;
 
@@ -24,31 +24,22 @@ async fn index () -> actix_web::Result<NamedFile> {
 #[post("/upload")]
 async fn upload_file(req: HttpRequest, payload: Multipart) -> actix_web::Result<NamedFile> {
     // 1. 检查请求大小
-    if let Err(resp) = check_request_size(&req) {
-        return Err(ErrorBadRequest(format!("Request size exceeds limit: {}", resp)));
-    }
 
+    check_request_size(&req).map_err(|e| ErrorBadRequest(format!("Request size exceeds limit: {}", e)))?;
     // 2. 确保 uploads/ 文件夹存在
-    if let Err(resp) = ensure_upload_folder() {
-        return Err(ErrorBadRequest(format!("Error creating upload folder: {}", resp)));
-    }
 
+    ensure_upload_folder().map_err(|e| ErrorInternalServerError(format!("Error creating upload folder: {}", e)))?;
     // 3. 解析 multipart 表单, 得到 (player_id, file_path)
-    let (player_id, saved_filepath) = match parse_multipart_fields(payload).await {
-        Ok(t) => t,
-        Err(resp) => return Err(ErrorBadRequest(format!("Error parsing multipart fields: {}", resp))),
-    };
 
+    let (player_id, saved_filepath) = parse_multipart_fields(payload).await
+        .map_err(|e| ErrorInternalServerError(format!("Error parsing multipart fields: {}", e)))?;
     // 4. 清理旧文件
     delete_oldest_files(Path::new(UPLOAD_FOLDER), MAX_FOLDER_SIZE_MB);
 
     // 5. 运行 mjai-reviewer 命令并返回 HTML 结果
-    let html_output = match run_mjai_reviewer(&saved_filepath, &player_id) {
-        Ok(path) => path,
-        Err(e) => {
-            return Err(ErrorBadRequest(format!("Error running mjai-reviewer: {}", e)));
-        }
-    };
+
+    let html_output = run_mjai_reviewer(&saved_filepath, &player_id)
+        .map_err(|e| ErrorInternalServerError(format!("Error running mjai-reviewer: {}", e)))?;
 
     // 6. 返回 HTML 文件
     NamedFile::open(html_output).map_err(|e| {
@@ -86,36 +77,36 @@ async fn parse_multipart_fields(mut payload: Multipart)
     let mut saved_filepath: Option<PathBuf> = None;
 
     while let Some(item) = payload.next().await {
-        let field = match item {
-            Ok(f) => f,
-            Err(e) => {
-                return Err(format!("Error reading multipart field: {}", e));
-            }
-        };
+        // let field = match item {
+        //     Ok(f) => f,
+        //     Err(e) => {
+        //         return Err(format!("Error reading multipart field: {}", e));
+        //     }
+        // };
+        let field = item.map_err(|e| format!("Error reading multipart field: {}", e))?;
 
         let cd = field.content_disposition();
         if let Some(name) = cd.get_name() {
-            if name == "player_id" {
-                player_id = match read_player_id(field).await {
-                    Ok(id) => id,
-                    Err(resp) => return Err(resp),
-                };
-            } else if name == "file" {
-                saved_filepath = match save_uploaded_file(field).await {
-                    Ok(path) => Some(path),
-                    Err(resp) => return Err(resp),
-                };
+            match name {
+                "player_id" => {
+                    player_id = read_player_id(field).await?;
+                }
+                "file" => {
+                    saved_filepath = save_uploaded_file(field).await.ok();
+                }
+                _ => {}
             }
         }
     }
 
     // 如果没有 "file" 字段就报错
-    let saved_filepath = match saved_filepath {
-        Some(p) => p,
-        None => {
-            return Err("No file provided".to_string());
-        }
-    };
+    // let saved_filepath = match saved_filepath {
+    //     Some(p) => p,
+    //     None => {
+    //         return Err("No file provided".to_string());
+    //     }
+    // };
+    let saved_filepath = saved_filepath.ok_or("No file provided".to_string())?;
 
     Ok((player_id, saved_filepath))
 }
@@ -140,12 +131,16 @@ async fn read_player_id(mut field: actix_multipart::Field) -> Result<String, Str
 async fn save_uploaded_file(mut field: actix_multipart::Field) -> Result<PathBuf, String> {
     // 取出原文件名(若无则返回错误)
     let cd = field.content_disposition();
-    let filename = match cd.get_filename() {
-        Some(f) => sanitize(f),
-        None => {
-            return Err("No filename provided".to_string());
-        }
-    };
+    // let filename = match cd.get_filename() {
+    //     Some(f) => sanitize(f),
+    //     None => {
+    //         return Err("No filename provided".to_string());
+    //     }
+    // };
+
+    let filename = cd.get_filename()
+        .map(|f| sanitize(f))
+        .ok_or("No filename provided".to_string())?;
 
     // 构造唯一文件名
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
@@ -162,26 +157,30 @@ async fn save_uploaded_file(mut field: actix_multipart::Field) -> Result<PathBuf
     let final_path = Path::new(UPLOAD_FOLDER).join(&unique_name);
 
     // 创建文件
-    let mut file_handle = match fs::File::create(&final_path) {
-        Ok(f) => f,
-        Err(e) => {
-            return Err(format!("Error creating file: {}", e));
-        }
-    };
+    // let mut file_handle = match fs::File::create(&final_path) {
+    //     Ok(f) => f,
+    //     Err(e) => {
+    //         return Err(format!("Error creating file: {}", e));
+    //     }
+    // };
+    let mut file_handle = fs::File::create(&final_path)
+        .map_err(|e| format!("Error creating file: {}", e))?;
 
     // 逐块写入
     while let Some(chunk) = field.next().await {
-        let data = match chunk {
-            Ok(d) => d,
-            Err(e) => {
-                return Err(format!("Error reading file: {}", e));
-            }
-        };
-        if let Err(e) = file_handle.write_all(&data) {
-            return Err(format!("Error writing file: {}", e));
-        }
+        // let data = match chunk {
+        //     Ok(d) => d,
+        //     Err(e) => {
+        //         return Err(format!("Error reading file: {}", e));
+        //     }
+        // };
+        let data = chunk.map_err(|e| format!("Error reading file: {}", e))?;
+        // if let Err(e) = file_handle.write_all(&data) {
+        //     return Err(format!("Error writing file: {}", e));
+        // }
+        file_handle.write_all(&data)
+            .map_err(|e| format!("Error writing file: {}", e))?;
     }
-
     Ok(final_path)
 }
 
