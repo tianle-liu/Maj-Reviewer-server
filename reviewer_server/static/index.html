@@ -26,21 +26,31 @@
           method: 'POST',
           body: formData
         })
-        .then(response => response.json())
-        .then(data => {
+        .then(response => {
+          if (!response.ok) {
+            throw new Error(`Server error: ${response.status}`);
+          }
+          return response.text();
+        })
+        .then(html => {
           uploadButton.disabled = false;
           uploadButton.textContent = 'Upload';
-          if (data.filepath) {
-            window.open('/result/' + data.filepath, '_blank');
-          } else {
-            alert(data.error);
-          }
+
+          // 解析HTML并提取<title>作为提示
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(html, "text/html");
+          const pageTitle = doc.querySelector("title") ? doc.querySelector("title").innerText : "Upload Result";
+
+          // 打开新窗口
+          const newWindow = window.open();
+          newWindow.document.write(html);
+          newWindow.document.title = pageTitle;
         })
         .catch(error => {
           uploadButton.disabled = false;
           uploadButton.textContent = 'Upload';
           console.error('Error:', error);
-          alert("An error occurred during file upload.");
+          alert(`An error occurred: ${error.message}`);
         });
       }
     </script>
