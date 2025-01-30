@@ -237,7 +237,7 @@ async fn save_uploaded_file(mut field: actix_multipart::Field) -> Result<PathBuf
 
 fn run_mjai_reviewer(file_path: &Path, player_id: &str) -> Result<String, String> {
     // 执行命令
-    let status = Command::new("../mjai-reviewer")
+    let status = Command::new("./mjai-reviewer")
         .args(&[
             "-e",
             "mortal",
