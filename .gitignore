@@ -2,11 +2,6 @@ code
 __pycache__
 
 **/target
-*.pyd
-*.dll
-*.exe
-*.so
-*.pth
 
 .ipynb_checkpoints
 *.ipynb
